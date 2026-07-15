@@ -166,6 +166,35 @@ function buildLiveXray(live, asin) {
   };
 }
 
+/* Real catalog item but no usable Buy Box — render an honest notice in the
+   result panel instead of falling through to demo data. */
+function showXrayNotice(asin, name, message) {
+  document.getElementById("xr-emoji").textContent = "⚠️";
+  document.getElementById("xr-name").textContent = name;
+  document.getElementById("xr-asin").textContent = asin;
+  document.getElementById("xr-cat").textContent = "no live Buy Box";
+  const srcEl = document.getElementById("xr-src");
+  srcEl.textContent = "LIVE Amazon data"; srcEl.classList.add("live");
+  ["xr-rev", "xr-sales", "xr-bsr", "xr-reviews"].forEach(id => {
+    document.getElementById(id).textContent = "—";
+  });
+  document.getElementById("xr-trend").textContent = "";
+  document.getElementById("xr-rating").textContent = "";
+  document.getElementById("xr-fees").innerHTML =
+    `<tr><td colspan="2" style="color:var(--muted);padding:14px 0;line-height:1.5">${message}</td></tr>`;
+  document.getElementById("xr-verdict").innerHTML =
+    `<span class="verdict mid">⚠️ Can't score — no buyable Buy Box on this ASIN</span>`;
+  document.getElementById("xr-chart").innerHTML = "";
+  document.getElementById("xr-chart-start").textContent = "";
+  document.getElementById("xr-chart-end").textContent = "";
+  const chartSub = document.getElementById("xr-chart-sub");
+  if (chartSub) chartSub.textContent = "—";
+  lastXray = null;
+  const rsOut = document.getElementById("rs-result");
+  rsOut.classList.remove("show"); rsOut.innerHTML = "";
+  document.getElementById("xray-result").classList.add("show");
+}
+
 let xraySeq = 0;
 async function runXray() {
   const q = document.getElementById("xray-input").value.trim();
@@ -173,18 +202,28 @@ async function runXray() {
   const seq = ++xraySeq;
 
   // Live SP-API attempt — any failure silently falls back to demo data.
-  let live = null;
+  let live = null, liveResp = null;
   const asinMatch = q.toUpperCase().match(/B0[A-Z0-9]{8}/);
   if (asinMatch && window.NexApi) {
     try {
       const resp = await NexApi.serverXray(asinMatch[0]);
       // 503/error bodies are truthy — check .error explicitly.
       if (resp && !resp.error && resp.catalog && !resp.catalog.error && resp.catalog.summaries) {
+        liveResp = resp;
         live = buildLiveXray(resp, asinMatch[0]);
       }
     } catch (e) { live = null; }
   }
   if (seq !== xraySeq) return; // a newer X-Ray superseded this one mid-flight
+
+  // Real catalog match but NO live Buy Box (variation-parent / no buyable
+  // offer): tell the truth instead of silently rendering demo data.
+  if (!live && liveResp && liveResp.hasLiveBuyBox === false) {
+    const name = ((liveResp.catalog.summaries || [])[0] || {}).itemName || asinMatch[0];
+    showXrayNotice(asinMatch[0], name, liveResp.priceWarning ||
+      "No live Buy Box for this ASIN — try a specific child variation.");
+    return;
+  }
 
   const p = live ? live.product : xrayLookup(q);
   const isLive = p.source === "live";

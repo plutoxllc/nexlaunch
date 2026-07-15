@@ -139,6 +139,30 @@ async function safeCall(fn) {
   }
 }
 
+// The live Buy Box landed price ONLY (no lowest-offer fallback). Returns
+// null when there is no buyable Buy Box — which is the case for every
+// VARIATION_PARENT ASIN and any listing with TotalOfferCount 0.
+function buyBoxPrice(offers) {
+  if (!offers || offers.error) return null;
+  const summary = offers.payload && offers.payload.Summary;
+  if (!summary) return null;
+  const bb = Array.isArray(summary.BuyBoxPrices) ? summary.BuyBoxPrices[0] : null;
+  if (bb && bb.LandedPrice) {
+    const amt = Number(bb.LandedPrice.Amount);
+    if (Number.isFinite(amt) && amt > 0) return amt;
+  }
+  return null;
+}
+
+// itemClassification from the catalog summary (e.g. BASE_PRODUCT,
+// VARIATION_PARENT, VARIATION_CHILD). Returns null when unavailable.
+function catalogClassification(catalog) {
+  if (!catalog || catalog.error) return null;
+  const summaries = catalog.summaries || (catalog.payload && catalog.payload.summaries);
+  const s = Array.isArray(summaries) ? summaries[0] : null;
+  return (s && s.itemClassification) || null;
+}
+
 // Pull a usable listing price out of the offers section: Buy Box landed
 // price first, then the lowest offer. Returns null when the section errored
 // or carries no prices (TotalOfferCount may legitimately be 0).
@@ -208,6 +232,23 @@ async function handleXray(query) {
   const explicitPrice = Number.isFinite(priceParam) && priceParam > 0 ? priceParam : null;
   const feesEstimatedAt = derivedPrice ?? explicitPrice ?? 29.99;
 
+  // Explicit Buy Box truth so nobody mistakes a fee-anchor fallback for a
+  // real market price. VARIATION_PARENT ASINs and any listing with no
+  // buyable offer return NO live Buy Box — the fee number is meaningless
+  // as a resale price. priceBasis names exactly where feesEstimatedAt came from.
+  const itemClassification = catalogClassification(catalog);
+  const buyBox = buyBoxPrice(offers);
+  const hasLiveBuyBox = buyBox !== null;
+  const priceBasis = buyBox !== null ? 'live-buybox'
+    : derivedPrice !== null ? 'lowest-offer'
+    : explicitPrice !== null ? 'query-param'
+    : 'fee-anchor-fallback';
+  const priceWarning = hasLiveBuyBox ? null
+    : itemClassification === 'VARIATION_PARENT'
+      ? 'No live Buy Box: this is a variation-parent ASIN. Fees are anchored to a fallback price, not a real market price — use a specific child ASIN.'
+      : 'No live Buy Box: no buyable offer found. Fees are anchored to a fallback price, not a real market price.';
+  const priceMeta = { buyBox, hasLiveBuyBox, priceBasis, priceWarning, itemClassification };
+
   // No catalog match and no usable price: skip the fees round-trip entirely
   // (fees v0 is ~1 rps in production — bad ASINs must not burn the budget).
   if (catalog.error && derivedPrice === null && explicitPrice === null) {
@@ -215,7 +256,7 @@ async function handleXray(query) {
       status: 200,
       body: {
         source: CONFIG.spapiBase.includes('sandbox') ? 'sp-api-sandbox' : 'sp-api-production',
-        asin, catalog, offers,
+        asin, catalog, offers, ...priceMeta,
         fees: { error: 'skipped — no catalog match and no usable price', skipped: true },
         feesEstimatedAt: null,
       },
@@ -242,7 +283,7 @@ async function handleXray(query) {
     status: 200,
     body: {
       source: CONFIG.spapiBase.includes('sandbox') ? 'sp-api-sandbox' : 'sp-api-production',
-      asin, feesEstimatedAt, catalog, offers, fees,
+      asin, feesEstimatedAt, ...priceMeta, catalog, offers, fees,
     },
   };
 }

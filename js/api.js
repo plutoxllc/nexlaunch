@@ -6,7 +6,13 @@
 (function () {
   'use strict';
 
-  var BASE_URL = 'http://localhost:4879';
+  // Default: local server. Override (e.g. to a VPS) with:
+  //   NexApi.configure({ base: 'http://5.161.117.84:4879', token: '...' })
+  // — persisted in localStorage. NexApi.configure(null) resets to local.
+  var stored = {};
+  try { stored = JSON.parse(localStorage.getItem('nexlaunch_api') || '{}') || {}; } catch (e) {}
+  var BASE_URL = stored.base || 'http://localhost:4879';
+  var API_TOKEN = stored.token || '';
   // Production /api/xray is two sequential SP-API round-trips (catalog+offers,
   // then fees at the real Buy Box price) plus a possible LWA token exchange —
   // keep this generous; failures still silently fall back to demo data.
@@ -18,7 +24,9 @@
       controller.abort();
     }, TIMEOUT_MS);
 
-    return fetch(url, { signal: controller.signal })
+    var opts = { signal: controller.signal };
+    if (API_TOKEN) opts.headers = { Authorization: 'Bearer ' + API_TOKEN };
+    return fetch(url, opts)
       .then(function (res) {
         if (!res.ok) {
           // Non-2xx (e.g. credentials not configured) — treat as
@@ -55,6 +63,19 @@
      */
     health: function () {
       return fetchJson(BASE_URL + '/api/health');
+    },
+
+    /**
+     * Point the adapter at a different API server (persisted).
+     * configure({ base, token }) — configure(null) resets to localhost.
+     */
+    configure: function (cfg) {
+      if (cfg && cfg.base) {
+        localStorage.setItem('nexlaunch_api', JSON.stringify({ base: cfg.base, token: cfg.token || '' }));
+      } else {
+        localStorage.removeItem('nexlaunch_api');
+      }
+      location.reload();
     },
   };
 })();

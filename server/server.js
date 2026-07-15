@@ -52,6 +52,9 @@ const CONFIG = {
   spapiBase: env('SPAPI_BASE', 'https://sandbox.sellingpartnerapi-na.amazon.com'),
   port: Number(env('PORT', '4879')),
   marketplaceId: env('MARKETPLACE_ID', 'ATVPDKIKX0DER'),
+  // Optional bearer token. When set, /api/xray requires it — REQUIRED on any
+  // internet-reachable host, or strangers can burn your SP-API quota.
+  apiToken: env('NEXLAUNCH_API_TOKEN', ''),
 };
 
 function isConfigured() {
@@ -250,7 +253,7 @@ async function handleXray(query) {
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
 function sendJson(res, status, body) {
@@ -292,6 +295,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/xray') {
+      if (CONFIG.apiToken) {
+        const hdr = String(req.headers['authorization'] || '');
+        const presented = hdr.replace(/^Bearer\s+/i, '') || url.searchParams.get('token') || '';
+        if (presented !== CONFIG.apiToken) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+      }
       const { status, body } = await handleXray(url.searchParams);
       sendJson(res, status, body);
       return;

@@ -50,10 +50,16 @@
      * SP-API sandbox server. Resolves to the parsed JSON payload, or null
      * on any failure (server not running, timeout, or a non-2xx error
      * response — callers should fall back to demo data).
+     *
+     * opts.fulfillment — 'fba' (default, Amazon-fulfilled: fees include the
+     * FBA fulfillment fee) or 'fbm' (merchant-fulfilled / dropship: referral
+     * fee only, no FBA fee). Omitting opts keeps the historical FBA behavior.
      */
-    serverXray: function (asinOrQuery) {
+    serverXray: function (asinOrQuery, opts) {
       var url =
         BASE_URL + '/api/xray?asin=' + encodeURIComponent(asinOrQuery || '');
+      var f = opts && opts.fulfillment;
+      if (f === 'fbm' || f === 'fba') url += '&fulfillment=' + f;
       return fetchJson(url);
     },
 

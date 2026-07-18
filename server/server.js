@@ -209,6 +209,12 @@ async function handleXray(query) {
     return { status: 400, body: { error: 'missing required query param: asin' } };
   }
 
+  // Fulfillment mode: 'fba' (default, Amazon-fulfilled) or 'fbm'
+  // (merchant-fulfilled / dropship). FBM drops IsAmazonFulfilled so the fees
+  // estimate returns the referral fee (and any variable closing fee) but NO
+  // FBAFees line — the seller pays their supplier's ship cost, unknown to us.
+  const fulfillment = (query.get('fulfillment') || 'fba').toLowerCase() === 'fbm' ? 'fbm' : 'fba';
+
   const mkt = CONFIG.marketplaceId;
   const encAsin = encodeURIComponent(asin);
 
@@ -256,7 +262,7 @@ async function handleXray(query) {
       status: 200,
       body: {
         source: CONFIG.spapiBase.includes('sandbox') ? 'sp-api-sandbox' : 'sp-api-production',
-        asin, catalog, offers, ...priceMeta,
+        asin, fulfillment, catalog, offers, ...priceMeta,
         fees: { error: 'skipped — no catalog match and no usable price', skipped: true },
         feesEstimatedAt: null,
       },
@@ -269,7 +275,7 @@ async function handleXray(query) {
       body: {
         FeesEstimateRequest: {
           MarketplaceId: mkt,
-          IsAmazonFulfilled: true,
+          IsAmazonFulfilled: fulfillment === 'fba',
           PriceToEstimateFees: {
             ListingPrice: { CurrencyCode: 'USD', Amount: feesEstimatedAt },
           },
@@ -283,7 +289,7 @@ async function handleXray(query) {
     status: 200,
     body: {
       source: CONFIG.spapiBase.includes('sandbox') ? 'sp-api-sandbox' : 'sp-api-production',
-      asin, feesEstimatedAt, ...priceMeta, catalog, offers, fees,
+      asin, fulfillment, feesEstimatedAt, ...priceMeta, catalog, offers, fees,
     },
   };
 }

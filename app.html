@@ -71,6 +71,14 @@
           <input id="xray-input" type="text" placeholder="B0CX1EARBD  ·  https://amazon.com/dp/…  ·  ice roller">
           <button class="btn btn-primary" id="xray-btn">X-Ray →</button>
         </div>
+        <div class="xray-fulfill">
+          <span class="xray-fulfill-label">Fulfillment</span>
+          <div class="mode-toggle" id="xray-fulfill-toggle">
+            <button class="active" id="xr-mode-fba" type="button">FBA (stock)</button>
+            <button id="xr-mode-fbm" type="button">FBM (dropship)</button>
+          </div>
+          <span class="xray-fulfill-hint" id="xr-fulfill-hint">Amazon fulfills — fees include the FBA fee.</span>
+        </div>
       </div>
 
       <div class="xray-result" id="xray-result">
@@ -92,8 +100,8 @@
 
         <div class="grid-2" style="margin-top:20px">
           <div class="panel">
-            <h2>Profit Breakdown <span style="font-size:12px;color:var(--muted);font-weight:400">(per unit)</span></h2>
-            <p class="p-sub">Amazon FBA fee model, est. landed cost.</p>
+            <h2>Profit Breakdown <span style="font-size:12px;color:var(--muted);font-weight:400">(per unit)</span> <span class="fbm-badge" id="xr-fee-badge" hidden>DROPSHIP · FBM</span></h2>
+            <p class="p-sub" id="xr-fee-sub">Amazon FBA fee model, est. landed cost.</p>
             <table class="fee-table" id="xr-fees"></table>
             <div id="xr-verdict"></div>
           </div>
@@ -106,17 +114,17 @@
         </div>
 
         <div class="panel" style="margin-top:20px">
-          <h2>Reseller Mode</h2>
-          <p class="p-sub">Attaching to an existing listing instead of launching your own? Check if the margin survives.</p>
-          <label class="rs-toggle"><input type="checkbox" id="rs-toggle"><span>I'm reselling this product (attaching to the existing listing)</span></label>
+          <h2>Reseller Mode <span class="fbm-badge" id="rs-fee-badge" hidden>DROPSHIP · FBM</span></h2>
+          <p class="p-sub" id="rs-sub">Attaching to an existing listing instead of launching your own? Check if the margin survives.</p>
+          <label class="rs-toggle"><input type="checkbox" id="rs-toggle"><span id="rs-toggle-label">I'm reselling this product (attaching to the existing listing)</span></label>
           <div class="rs-fields" id="rs-fields">
             <div class="grid-2">
               <div class="field">
-                <label for="rs-cost">Your source cost per unit ($)</label>
+                <label for="rs-cost" id="rs-cost-label">Your source cost per unit ($)</label>
                 <input id="rs-cost" type="number" min="0" step="0.01" placeholder="12.50">
               </div>
               <div class="field">
-                <label for="rs-prep">Prep + inbound shipping per unit ($)</label>
+                <label for="rs-prep" id="rs-prep-label">Prep + inbound shipping per unit ($)</label>
                 <input id="rs-prep" type="number" min="0" step="0.01" value="1.50">
               </div>
             </div>

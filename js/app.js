@@ -69,6 +69,51 @@ const ALL_ROWS = [...AMZ_PRODUCTS.map(amzRow), ...TT_PRODUCTS.map(ttRow)];
 /* ---------- X-Ray ---------- */
 let lastXray = null;
 
+/* Fulfillment mode for the live X-Ray:
+   'fba' = Amazon-fulfilled (fees include the FBA fulfillment fee — default,
+   unchanged behavior); 'fbm' = merchant-fulfilled / dropship (Amazon does NOT
+   fulfill, so there is NO FBA fee — only the ~15% referral fee. The supplier's
+   ship-to-customer cost is unknown to the API and is entered in Reseller Mode). */
+let xrayFulfillment = "fba";
+const XR_FULFILL_HINTS = {
+  fba: "Amazon fulfills — fees include the FBA fee.",
+  fbm: "You/your supplier ship the order — referral fee only, no FBA fee."
+};
+
+/* Sync the result-panel copy (fee-model note, dropship badges, Reseller Mode
+   input labels) to whichever mode actually produced the rendered numbers.
+   Demo/synth results always render FBA-style, so this is called with false
+   for them — the DROPSHIP badge only appears on a real live FBM analysis. */
+function applyFulfillmentUI(isFbm) {
+  document.getElementById("xr-fee-badge").hidden = !isFbm;
+  document.getElementById("rs-fee-badge").hidden = !isFbm;
+  document.getElementById("xr-fee-sub").textContent = isFbm
+    ? "Dropship (FBM): Amazon referral only — no FBA fee. Supplier ship cost is set in Reseller Mode."
+    : "Amazon FBA fee model, est. landed cost.";
+  document.getElementById("rs-cost-label").textContent = isFbm
+    ? "Wholesale cost per unit ($)"
+    : "Your source cost per unit ($)";
+  document.getElementById("rs-prep-label").textContent = isFbm
+    ? "Supplier ship-to-customer cost ($)"
+    : "Prep + inbound shipping per unit ($)";
+  document.getElementById("rs-toggle-label").textContent = isFbm
+    ? "I'm dropshipping this product (merchant-fulfilled / FBM)"
+    : "I'm reselling this product (attaching to the existing listing)";
+}
+
+function setXrayFulfillment(mode) {
+  const next = mode === "fbm" ? "fbm" : "fba";
+  if (next === xrayFulfillment) return; // clicking the active button is a no-op
+  xrayFulfillment = next;
+  document.getElementById("xr-mode-fba").className = next === "fba" ? "active" : "";
+  document.getElementById("xr-mode-fbm").className = next === "fbm" ? "active fbm" : "";
+  document.getElementById("xr-fulfill-hint").textContent = XR_FULFILL_HINTS[next];
+  // Re-run the current query in the new mode. Live ASINs re-fetch with the new
+  // IsAmazonFulfilled; demo queries just re-render FBA-style. xraySeq guards
+  // stale responses. No query yet → nothing to re-render.
+  if (document.getElementById("xray-input").value.trim()) runXray();
+}
+
 /* Map an Amazon rank-group title (e.g. "Beauty & Personal Care") onto the
    closest BSR_MODEL key; otherwise fall back to the default model. */
 function bsrModelKeyFor(title) {
@@ -169,6 +214,7 @@ function buildLiveXray(live, asin) {
 /* Real catalog item but no usable Buy Box — render an honest notice in the
    result panel instead of falling through to demo data. */
 function showXrayNotice(asin, name, message) {
+  applyFulfillmentUI(false); // no fee model rendered — reset labels/badges to FBA
   document.getElementById("xr-emoji").textContent = "⚠️";
   document.getElementById("xr-name").textContent = name;
   document.getElementById("xr-asin").textContent = asin;
@@ -206,7 +252,7 @@ async function runXray() {
   const asinMatch = q.toUpperCase().match(/B0[A-Z0-9]{8}/);
   if (asinMatch && window.NexApi) {
     try {
-      const resp = await NexApi.serverXray(asinMatch[0]);
+      const resp = await NexApi.serverXray(asinMatch[0], { fulfillment: xrayFulfillment });
       // 503/error bodies are truthy — check .error explicitly.
       if (resp && !resp.error && resp.catalog && !resp.catalog.error && resp.catalog.summaries) {
         liveResp = resp;
@@ -227,10 +273,23 @@ async function runXray() {
 
   const p = live ? live.product : xrayLookup(q);
   const isLive = p.source === "live";
+  // FBM (dropship) only for a real live analysis — the mode the SERVER actually
+  // used (echoed back) is authoritative. Demo/synth results stay FBA-style.
+  const isFbm = isLive && (((liveResp && liveResp.fulfillment) || xrayFulfillment) === "fbm");
+  applyFulfillmentUI(isFbm);
   const feesReal = !!(live && live.fees);
   const sales = p.bsr ? estimateSalesFromBSR(p.bsr, p.category) : null;
   const revenue = sales ? sales * p.price : null;
-  const fees = feesReal ? live.fees : amazonFees(p.price, p.weight);
+  // Fees: real SP-API numbers when available. Otherwise estimate — but in FBM
+  // the estimate is referral-ONLY (no fabricated FBA fee; amazonFees() would
+  // invent one). fees.fba is always 0 in FBM so downstream math needs no branch.
+  let fees;
+  if (feesReal) fees = live.fees;
+  else if (isFbm) { const ref = p.price * 0.15; fees = { referral: ref, fba: 0, total: ref }; }
+  else fees = amazonFees(p.price, p.weight);
+  // FBM payout keeps the supplier's product + ship cost OUT (unknown to the API);
+  // it is deliberately "before product + ship cost", not a net margin.
+  const payoutFbm = p.price - fees.total;
   const profit = p.price - fees.total - p.cost;
   const marginPct = (profit / p.price) * 100;
 
@@ -261,17 +320,34 @@ async function runXray() {
   document.getElementById("xr-rating").textContent = isLive ? "n/a" : "★ " + p.rating.toFixed(1) + " avg";
 
   const otherFees = fees.total - fees.referral - fees.fba;
-  document.getElementById("xr-fees").innerHTML = `
-    <tr><td>Sale price${isLive ? " (Buy Box)" : ""}</td><td>${fmtUSD(p.price, 2)}</td></tr>
-    <tr><td>Referral fee${feesReal ? "" : " (15% est.)"}</td><td style="color:var(--red)">−${fmtUSD(fees.referral, 2)}</td></tr>
-    <tr><td>FBA fulfillment${feesReal ? "" : " (est.)"}</td><td style="color:var(--red)">−${fmtUSD(fees.fba, 2)}</td></tr>
-    ${feesReal && Math.abs(otherFees) > 0.005
-      ? `<tr><td>${otherFees >= 0 ? "Other Amazon fees" : "Fee promotion / credit"}</td><td style="color:${otherFees >= 0 ? "var(--red)" : "var(--green)"}">${otherFees >= 0 ? "−" : "+"}${fmtUSD(Math.abs(otherFees), 2)}</td></tr>` : ""}
-    <tr><td>${isLive ? "Est. landed cost (25% assumption)" : "Est. landed cost"}</td><td style="color:var(--red)">−${fmtUSD(p.cost, 2)}</td></tr>
-    <tr><td>Net profit / unit</td><td style="color:${profit > 0 ? "var(--green)" : "var(--red)"}">${fmtUSD(profit, 2)} (${marginPct.toFixed(0)}%)</td></tr>`;
+  const feeRows = [
+    `<tr><td>Sale price${isLive ? " (Buy Box)" : ""}</td><td>${fmtUSD(p.price, 2)}</td></tr>`,
+    `<tr><td>Referral fee${feesReal ? (isFbm ? " (FBM)" : "") : " (15% est.)"}</td><td style="color:var(--red)">−${fmtUSD(fees.referral, 2)}</td></tr>`
+  ];
+  // FBA-only: the FBA fulfillment fee. FBM has none — Amazon isn't fulfilling.
+  if (!isFbm) {
+    feeRows.push(`<tr><td>FBA fulfillment${feesReal ? "" : " (est.)"}</td><td style="color:var(--red)">−${fmtUSD(fees.fba, 2)}</td></tr>`);
+  }
+  if (feesReal && Math.abs(otherFees) > 0.005) {
+    feeRows.push(`<tr><td>${otherFees >= 0 ? "Other Amazon fees" : "Fee promotion / credit"}</td><td style="color:${otherFees >= 0 ? "var(--red)" : "var(--green)"}">${otherFees >= 0 ? "−" : "+"}${fmtUSD(Math.abs(otherFees), 2)}</td></tr>`);
+  }
+  if (isFbm) {
+    // No fabricated landed/fulfillment cost — the supplier ship cost is unknown
+    // to the API. Show it as a placeholder and stop the "net" at payout-after-
+    // referral, clearly labeled so nobody reads it as a true dropship margin.
+    feeRows.push(`<tr><td class="muted">Ship to customer</td><td class="muted">set in Reseller Mode</td></tr>`);
+    feeRows.push(`<tr><td>Net before product + ship cost</td><td style="color:${payoutFbm > 0 ? "var(--green)" : "var(--red)"}">${fmtUSD(payoutFbm, 2)}</td></tr>`);
+  } else {
+    feeRows.push(`<tr><td>${isLive ? "Est. landed cost (25% assumption)" : "Est. landed cost"}</td><td style="color:var(--red)">−${fmtUSD(p.cost, 2)}</td></tr>`);
+    feeRows.push(`<tr><td>Net profit / unit</td><td style="color:${profit > 0 ? "var(--green)" : "var(--red)"}">${fmtUSD(profit, 2)} (${marginPct.toFixed(0)}%)</td></tr>`);
+  }
+  document.getElementById("xr-fees").innerHTML = feeRows.join("");
 
   const v = document.getElementById("xr-verdict");
-  if (marginPct >= 30 && revenue >= 50000) {
+  if (isFbm) {
+    // Can't score a dropship without the seller's wholesale + ship cost.
+    v.innerHTML = `<span class="verdict mid">⚠️ Dropship margin needs your wholesale + ship cost — enter them in Reseller Mode below</span>`;
+  } else if (marginPct >= 30 && revenue >= 50000) {
     v.innerHTML = `<span class="verdict good">✅ Strong opportunity — healthy margin at scale</span>`;
   } else if (marginPct >= 18) {
     v.innerHTML = `<span class="verdict mid">⚠️ Workable — margin is thin, negotiate COGS or bundle</span>`;
@@ -304,7 +380,7 @@ async function runXray() {
     ? "Modeled from live sales rank (estimate)."
     : "Modeled from rank velocity (demo).";
 
-  lastXray = { product: p, fees, feesReal };
+  lastXray = { product: p, fees, feesReal, isFbm };
   const rsOut = document.getElementById("rs-result");
   rsOut.classList.remove("show");
   rsOut.innerHTML = "";
@@ -313,6 +389,8 @@ async function runXray() {
 }
 document.getElementById("xray-btn").addEventListener("click", runXray);
 document.getElementById("xray-input").addEventListener("keydown", e => { if (e.key === "Enter") runXray(); });
+document.getElementById("xr-mode-fba").addEventListener("click", () => setXrayFulfillment("fba"));
+document.getElementById("xr-mode-fbm").addEventListener("click", () => setXrayFulfillment("fbm"));
 
 /* ---------- reseller mode ---------- */
 const RS_COMMON_WORDS = new Set(("with for and the pro max mini plus set kit pack premium organic wireless electric " +
@@ -361,7 +439,9 @@ document.getElementById("rs-calc").addEventListener("click", () => {
     : `✔ <strong>Typically ungated category</strong>`;
 
   const rsSrc = p.source === "live" ? "live buy box" : "demo data";
-  const rsFeeNote = lastXray.feesReal ? "real Amazon fees" : "referral + FBA (est.)";
+  const rsFeeNote = lastXray.isFbm
+    ? (lastXray.feesReal ? "real Amazon fees (FBM)" : "referral only (FBM, est.)")
+    : (lastXray.feesReal ? "real Amazon fees" : "referral + FBA (est.)");
   out.innerHTML = `
     <div class="grid-4">
       <div class="kpi"><div class="k-label">Buy Box${p.source === "live" ? "" : " (est.)"}</div><div class="k-value">${fmtUSD(buyBox, 2)}</div><div class="k-delta" style="color:var(--muted)">${rsSrc}</div></div>

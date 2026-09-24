@@ -7,6 +7,8 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const accounts = require('./accounts');
+const billing = require('./billing');
 
 // ---------------------------------------------------------------------------
 // Env loading: server/.env (KEY=VALUE lines, # comments) with process.env wins
@@ -55,6 +57,18 @@ const CONFIG = {
   // Optional bearer token. When set, /api/xray requires it — REQUIRED on any
   // internet-reachable host, or strangers can burn your SP-API quota.
   apiToken: env('NEXLAUNCH_API_TOKEN', ''),
+  // Merged view of server/.env + process.env, for modules that take an env bag
+  // rather than calling env() themselves (billing.js). Same precedence as
+  // env() above: a real process.env value wins, an empty one does not.
+  // Without this, Stripe keys written to server/.env - the documented place,
+  // where the SP-API creds already live - would be invisible and billing would
+  // report itself unconfigured with the keys sitting right there.
+  env: {
+    ...fileEnv,
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(([, v]) => v !== undefined && v !== '')
+    ),
+  },
 };
 
 function isConfigured() {
@@ -351,6 +365,175 @@ function authorized(req, url) {
   return presented === CONFIG.apiToken;
 }
 
+// ---------------------------------------------------------------------------
+// Accounts + billing
+//
+// Until now this server had exactly one kind of caller: our own tooling,
+// holding a shared ops token. A paying customer cannot be given that token, so
+// there was no way for one to reach live data at all - the public site is in
+// demo mode partly for that reason. Sessions are the second key.
+// ---------------------------------------------------------------------------
+
+const MAX_BODY = 1024 * 1024; // 1MB - webhooks and signup forms are tiny
+
+/** Read the raw body. Raw, not parsed: Stripe signs the exact bytes. */
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) {
+        reject(new Error('request body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+function parseJson(raw) {
+  try {
+    const v = JSON.parse(raw || '{}');
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return null;
+  }
+}
+
+const bearer = (req, url) =>
+  String(req.headers['authorization'] || '').replace(/^Bearer\s+/i, '')
+  || url.searchParams.get('token')
+  || '';
+
+/**
+ * Login rate limit, per IP, in memory.
+ *
+ * A password endpoint with no limiter is a free offline-speed guessing oracle.
+ * In-memory is honest for a single process: it resets on restart, which is a
+ * real weakness, and the fix is a shared store once there is more than one box.
+ */
+const attempts = new Map();
+function rateLimited(key, limit = 10, windowMs = 15 * 60 * 1000) {
+  const now = Date.now();
+  const rec = attempts.get(key);
+  if (!rec || now > rec.reset) {
+    attempts.set(key, { n: 1, reset: now + windowMs });
+    return false;
+  }
+  rec.n += 1;
+  return rec.n > limit;
+}
+// Keep the map from growing without bound on a long-lived process.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of attempts) if (now > v.reset) attempts.delete(k);
+}, 10 * 60 * 1000).unref();
+
+const clientIp = (req) =>
+  String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+  || req.socket?.remoteAddress
+  || 'unknown';
+
+/** Plans that may call the live SP-API routes. Free accounts get demo data. */
+const LIVE_DATA_PLANS = new Set(['starter', 'growth', 'scale']);
+
+/**
+ * Who is calling? Either our ops token (tooling) or a signed-in customer.
+ * Returns null when neither, so the caller decides the status code.
+ */
+function identify(req, url) {
+  const presented = bearer(req, url);
+  if (!presented) return null;
+  if (CONFIG.apiToken && presented === CONFIG.apiToken) return { kind: 'ops' };
+  const user = accounts.userForToken(presented);
+  return user ? { kind: 'user', user } : null;
+}
+
+async function handleAuth(req, res, url, pathname) {
+  if (pathname === '/api/auth/signup' && req.method === 'POST') {
+    const body = parseJson(await readBody(req));
+    if (!body) return sendJson(res, 400, { error: 'body must be JSON' });
+    if (rateLimited(`signup:${clientIp(req)}`, 5)) {
+      return sendJson(res, 429, { error: 'too many signups from this address, try later' });
+    }
+    const out = accounts.signup(body);
+    if (out.error) return sendJson(res, 400, out);
+    return sendJson(res, 201, out);
+  }
+
+  if (pathname === '/api/auth/login' && req.method === 'POST') {
+    const body = parseJson(await readBody(req));
+    if (!body) return sendJson(res, 400, { error: 'body must be JSON' });
+    if (rateLimited(`login:${clientIp(req)}`)) {
+      return sendJson(res, 429, { error: 'too many attempts, try again in a few minutes' });
+    }
+    const out = accounts.login(body);
+    if (out.error) return sendJson(res, 401, out);
+    return sendJson(res, 200, out);
+  }
+
+  if (pathname === '/api/auth/me' && req.method === 'GET') {
+    const user = accounts.userForToken(bearer(req, url));
+    if (!user) return sendJson(res, 401, { error: 'not signed in' });
+    return sendJson(res, 200, { user });
+  }
+
+  if (pathname === '/api/auth/logout' && req.method === 'POST') {
+    accounts.logout(bearer(req, url));
+    return sendJson(res, 200, { ok: true });
+  }
+  return false;
+}
+
+async function handleBilling(req, res, url, pathname) {
+  if (pathname === '/api/billing/plans' && req.method === 'GET') {
+    const prices = billing.priceIds(CONFIG.env || process.env);
+    return sendJson(res, 200, {
+      configured: billing.isConfigured(CONFIG.env || process.env),
+      plans: Object.fromEntries(Object.entries(prices).map(([k, v]) => [k, Boolean(v)])),
+    });
+  }
+
+  if (pathname === '/api/billing/checkout' && req.method === 'POST') {
+    const user = accounts.userForToken(bearer(req, url));
+    if (!user) return sendJson(res, 401, { error: 'sign in first' });
+    const body = parseJson(await readBody(req));
+    if (!body) return sendJson(res, 400, { error: 'body must be JSON' });
+    const origin = String(req.headers.origin || '');
+    const out = await billing.createCheckout(CONFIG.env || process.env, {
+      user,
+      plan: String(body.plan || ''),
+      origin,
+    });
+    if (out.error) return sendJson(res, 400, out);
+    return sendJson(res, 200, out);
+  }
+
+  if (pathname === '/api/billing/webhook' && req.method === 'POST') {
+    // RAW body, before any parsing - the signature covers the exact bytes.
+    const raw = await readBody(req);
+    const verdict = billing.verifyWebhook(
+      CONFIG.env || process.env,
+      raw,
+      req.headers['stripe-signature']
+    );
+    if (!verdict.ok) {
+      console.log(`  webhook REJECTED: ${verdict.error}`);
+      return sendJson(res, 400, { error: verdict.error });
+    }
+    const result = billing.applyEvent(verdict.event);
+    // 200 even for events we ignore, or Stripe retries them for days and the
+    // ones that matter get lost in the noise.
+    console.log(`  webhook ${verdict.event.type}: ${result.ignored ? `ignored (${result.reason})` : `applied to ${result.email} -> ${result.plan || 'status only'}`}`);
+    return sendJson(res, 200, { received: true });
+  }
+  return false;
+}
+
 const server = http.createServer(async (req, res) => {
   const started = Date.now();
   let url;
@@ -379,9 +562,21 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, status, body);
       return;
     }
+    if (url.pathname.startsWith('/api/auth/')) {
+      if ((await handleAuth(req, res, url, url.pathname)) !== false) return;
+    }
+    if (url.pathname.startsWith('/api/billing/')) {
+      if ((await handleBilling(req, res, url, url.pathname)) !== false) return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/xray') {
-      if (!authorized(req, url)) {
+      const who = identify(req, url);
+      if (!who) {
         sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      if (who.kind === 'user' && !LIVE_DATA_PLANS.has(who.user.plan)) {
+        sendJson(res, 402, { error: 'live data needs a paid plan', plan: who.user.plan, upgrade: true });
         return;
       }
       const { status, body } = await handleXray(url.searchParams);
@@ -389,8 +584,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/search') {
-      if (!authorized(req, url)) {
+      const who = identify(req, url);
+      if (!who) {
         sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      if (who.kind === 'user' && !LIVE_DATA_PLANS.has(who.user.plan)) {
+        sendJson(res, 402, { error: 'live data needs a paid plan', plan: who.user.plan, upgrade: true });
         return;
       }
       const { status, body } = await handleSearch(url.searchParams);

@@ -1,1 +1,7 @@
 .env
+
+# Account data: password hashes, customer emails, live session tokens.
+# THIS REPO IS PUBLIC (GitHub Pages serves it) — committing this would publish
+# every customer's email and hash, and hand out valid sessions.
+data/
+*.db

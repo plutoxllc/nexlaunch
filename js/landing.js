@@ -57,16 +57,89 @@
   });
   document.addEventListener("keydown", e => { if (e.key === "Escape") overlay.classList.remove("open"); });
 
+  // Signup / login against the real API.
+  //
+  // This used to write the "account" straight into localStorage and redirect,
+  // which meant there was no account: nothing to charge, nothing to protect,
+  // and a paid plan was one devtools line away. The plan shown in the modal is
+  // now only a hint about what they INTEND to buy - what they actually get is
+  // decided by Stripe and set by the webhook.
+  let mode = "signup";
+  const nameField = document.getElementById("su-name").closest(".field");
+  const submitBtn = document.getElementById("su-submit");
+  const switchLink = document.getElementById("su-switch");
+  const switchText = document.getElementById("su-switch-text");
+
+  function setMode(next) {
+    mode = next;
+    const signingUp = mode === "signup";
+    nameField.style.display = signingUp ? "" : "none";
+    document.getElementById("su-name").required = signingUp;
+    document.getElementById("su-password").setAttribute(
+      "autocomplete", signingUp ? "new-password" : "current-password");
+    submitBtn.textContent = signingUp ? "Create account \u2192" : "Log in \u2192";
+    // The heading and subtitle belong to signup; in login mode they were
+    // telling a returning customer they were creating an account and naming a
+    // plan they had not chosen.
+    const title = document.getElementById("su-title");
+    const sub = document.getElementById("su-sub");
+    if (title) title.textContent = signingUp ? "Create your account" : "Welcome back";
+    if (sub) sub.style.display = signingUp ? "" : "none";
+    switchText.textContent = signingUp ? "Already have an account?" : "Need an account?";
+    switchLink.textContent = signingUp ? "Log in" : "Sign up";
+    msg.classList.remove("ok", "err");
+  }
+
+  switchLink.addEventListener("click", e => {
+    e.preventDefault();
+    setMode(mode === "signup" ? "login" : "signup");
+  });
+
+  document.querySelectorAll("[data-open-login]").forEach(el => {
+    el.addEventListener("click", e => {
+      e.preventDefault();
+      setMode("login");
+      overlay.classList.add("open");
+      document.getElementById("su-email").focus();
+    });
+  });
+
+  function showError(text) {
+    msg.textContent = text;
+    msg.classList.remove("ok");
+    msg.classList.add("err");
+    msg.style.display = "block";
+    submitBtn.disabled = false;
+    submitBtn.textContent = mode === "signup" ? "Create account \u2192" : "Log in \u2192";
+  }
+
   form.addEventListener("submit", e => {
     e.preventDefault();
-    const account = {
-      name: document.getElementById("su-name").value.trim(),
-      email: document.getElementById("su-email").value.trim(),
-      plan: planEl.textContent,
-      createdAt: new Date().toISOString()
-    };
-    localStorage.setItem("nexlaunch_account", JSON.stringify(account));
-    msg.classList.add("ok");
-    setTimeout(() => { window.location.href = "app.html"; }, 900);
+    const email = document.getElementById("su-email").value.trim();
+    const password = document.getElementById("su-password").value;
+    const name = document.getElementById("su-name").value.trim();
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = mode === "signup" ? "Creating\u2026" : "Signing in\u2026";
+
+    const req = mode === "signup"
+      ? NexAuth.signup({ email, password, name })
+      : NexAuth.login({ email, password });
+
+    req.then(r => {
+      if (!r.ok) {
+        showError(r.body.offline
+          ? "Can't reach the NexLaunch API. Is the server running?"
+          : (r.body.error || "Something went wrong."));
+        return;
+      }
+      msg.textContent = mode === "signup"
+        ? "Account created \u2014 opening your dashboard\u2026"
+        : "Welcome back \u2014 opening your dashboard\u2026";
+      msg.classList.remove("err");
+      msg.classList.add("ok");
+      msg.style.display = "block";
+      setTimeout(() => { window.location.href = "app.html"; }, 700);
+    });
   });
 })();

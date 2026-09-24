@@ -31,8 +31,17 @@ Throttled to ~1 req/1.5s to protect the SP-API fees quota.
 
 import csv, json, math, os, re, sys, time, urllib.request
 
-API_BASE = os.environ.get("NEXLAUNCH_API_BASE", "http://5.161.117.84:4879")
+API_BASE = os.environ.get("NEXLAUNCH_API_BASE", "http://100.125.249.79:4879")  # box1 tailnet IP; public 5.161.117.84 is firewalled
 CONNECT_FILE = os.path.expanduser("~/Desktop/nexlaunch-vps-connect.txt")
+
+# Gate knobs — defaults are the CWR-era profile ($60-150 accessories, FBM attach).
+# Override per supplier, e.g. a Kole low-ticket/bundle run:
+#   HUNT_BAND_MIN=15 HUNT_BAND_MAX=60 HUNT_MIN_NET=6 HUNT_SHIP=6.50 tools/attach-hunt.py kole.csv
+BAND_MIN = float(os.environ.get("HUNT_BAND_MIN", 60))
+BAND_MAX = float(os.environ.get("HUNT_BAND_MAX", 150))
+MIN_NET = float(os.environ.get("HUNT_MIN_NET", 15))
+MIN_ROI = float(os.environ.get("HUNT_MIN_ROI", 0.25))
+DEFAULT_SHIP = float(os.environ.get("HUNT_SHIP", 9.95))
 
 # CWR brands that require manufacturer authorization (captured from their
 # dealer application 2026-07-26). We declared none, so these are off-limits.
@@ -138,8 +147,8 @@ def score_row(row, live):
         kills.append(f"only {offer_count} offer(s) — attach-hostile/gating risk")
 
     # gate 3: price band
-    if not (60 <= buybox <= 150):
-        kills.append(f"Buy Box ${buybox:.2f} outside $60-150 band")
+    if not (BAND_MIN <= buybox <= BAND_MAX):
+        kills.append(f"Buy Box ${buybox:.2f} outside ${BAND_MIN:g}-{BAND_MAX:g} band")
 
     # gate 4: margin with real FBM fees (validated against feesEstimatedAt)
     fees_total = None
@@ -154,11 +163,11 @@ def score_row(row, live):
         fee_note = "est 15%"
         warns.append("fees estimated (fee endpoint unavailable/mismatched)")
     wholesale = float(row["wholesale"])
-    ship = float(row.get("ship") or 9.95)
+    ship = float(row.get("ship") or DEFAULT_SHIP)
     net = buybox - fees_total - wholesale - ship
     cash_in = wholesale + ship
     roi = net / cash_in if cash_in else 0
-    if net < 15 or roi < 0.25:
+    if net < MIN_NET or roi < MIN_ROI:
         kills.append(f"margin: net ${net:.2f}, ROI {roi*100:.0f}% ({fee_note} fees)")
 
     # gate 5: brands

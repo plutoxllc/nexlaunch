@@ -22,7 +22,7 @@
       <a href="#faq">FAQ</a>
     </div>
     <div class="nav-cta">
-      <a href="app.html" class="btn btn-ghost btn-sm">Log in</a>
+      <a href="#" class="btn btn-ghost btn-sm" data-open-login>Log in</a>
       <button class="btn btn-primary btn-sm" data-signup data-plan="Pro">Get Started</button>
     </div>
   </div>
@@ -388,8 +388,8 @@
 <div class="modal-overlay" id="signup-modal">
   <div class="modal">
     <button class="close" data-close>×</button>
-    <h3>Create your account</h3>
-    <p class="m-sub">Selected plan: <strong id="modal-plan" style="color:var(--green)">Pro</strong> — no charge until checkout is connected.</p>
+    <h3 id="su-title">Create your account</h3>
+    <p class="m-sub" id="su-sub">Selected plan: <strong id="modal-plan" style="color:var(--green)">Pro</strong> — no charge until checkout is connected.</p>
     <form id="signup-form">
       <div class="field">
         <label for="su-name">Name</label>
@@ -397,15 +397,24 @@
       </div>
       <div class="field">
         <label for="su-email">Email</label>
-        <input id="su-email" type="email" placeholder="you@example.com" required>
+        <input id="su-email" type="email" placeholder="you@example.com" autocomplete="email" required>
       </div>
-      <button type="submit" class="btn btn-primary btn-block">Continue to Dashboard →</button>
+      <div class="field">
+        <label for="su-password">Password</label>
+        <input id="su-password" type="password" placeholder="at least 10 characters" autocomplete="new-password" minlength="10" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="su-submit">Create account →</button>
       <div class="form-msg" id="signup-msg">Account created — opening your dashboard…</div>
+      <p class="muted" style="text-align:center;margin-top:12px;font-size:13px">
+        <span id="su-switch-text">Already have an account?</span>
+        <a href="#" id="su-switch" style="color:var(--accent, #35d07f)">Log in</a>
+      </p>
     </form>
   </div>
 </div>
 
 <script src="js/data.js"></script>
+<script src="js/auth.js"></script>
 <script src="js/landing.js"></script>
 <script src="js/quote.js"></script>
 <script src="js/receptionist.js"></script>

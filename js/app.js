@@ -1,16 +1,99 @@
 /* ============ NexLaunch — dashboard app ============ */
 
-/* ---------- account / topbar ---------- */
+/* ---------- account / topbar ----------
+   The identity and the PLAN both come from the server now. The old version
+   read them out of localStorage, which the browser wrote itself, so the
+   dashboard believed whatever it was told about what had been paid for.
+
+   Three outcomes, deliberately not two:
+     user object -> signed in, show them
+     null        -> signed out, send them to the landing page
+     undefined   -> the API is unreachable. Do NOT sign them out. A paying
+                    customer losing wifi must not get bounced to a signup form;
+                    show a degraded banner and leave them where they are.
+------------------------------------------------------------------------- */
+window.NexUser = null;
+
 (function initAccount() {
-  try {
-    const acct = JSON.parse(localStorage.getItem("nexlaunch_account") || "null");
-    if (acct && acct.name) {
-      document.getElementById("user-name").textContent = acct.name;
-      document.getElementById("user-avatar").textContent = acct.name.trim()[0].toUpperCase();
-      if (acct.plan) document.getElementById("side-plan").textContent = acct.plan + " (trial)";
+  // Loud, not silent. This used to `return` quietly when auth.js had not
+  // loaded, and the dashboard then sat there showing "Guest Seller / Free
+  // Trial" as though that were a real answer - which cost several rounds of
+  // debugging a stale cached app.html. A missing dependency is a broken page,
+  // and it should say so.
+  if (!window.NexAuth) {
+    console.error('NexLaunch: js/auth.js did not load — the dashboard cannot verify who you are.');
+    showApiBanner('Dashboard failed to load its auth client. Hard-refresh the page (Cmd-Shift-R).');
+    return;
+  }
+
+  NexAuth.me().then(user => {
+    if (user === null) {
+      // Genuinely signed out. Keep the intended destination so login returns
+      // them here rather than dumping them on the landing page.
+      try { sessionStorage.setItem("nexlaunch_after_login", location.pathname); } catch (e) {}
+      location.href = "index.html";
+      return;
     }
-  } catch (e) { /* fresh visitor */ }
+
+    if (user === undefined) {
+      showApiBanner("Can't reach the NexLaunch API \u2014 showing demo data. Your account is fine.");
+      return;
+    }
+
+    window.NexUser = user;
+    const label = user.name || user.email;
+    const nameEl = document.getElementById("user-name");
+    const avEl = document.getElementById("user-avatar");
+    const planEl = document.getElementById("side-plan");
+    if (nameEl) nameEl.textContent = label;
+    if (avEl) avEl.textContent = String(label).trim()[0].toUpperCase();
+    if (planEl) planEl.textContent = NexAuth.planLabel(user);
+
+    if (user.planStatus === "past_due") {
+      showApiBanner("Your last payment failed \u2014 update your card to keep live data.");
+    }
+    document.body.dataset.plan = user.plan;
+  });
+
+  // Stripe sends them back here after checkout. The redirect proves nothing on
+  // its own - the webhook is what grants the plan, and it can land after this
+  // page does - so re-ask the server rather than trusting the URL.
+  if (/[?&]checkout=success/.test(location.search)) {
+    let tries = 0;
+    const poll = setInterval(() => {
+      tries += 1;
+      NexAuth.me().then(u => {
+        if (u && u.plan && u.plan !== "free") {
+          window.NexUser = u;
+          const planEl = document.getElementById("side-plan");
+          if (planEl) planEl.textContent = NexAuth.planLabel(u);
+          document.body.dataset.plan = u.plan;
+          clearInterval(poll);
+        } else if (tries >= 10) {
+          clearInterval(poll);
+          showApiBanner("Payment received \u2014 your plan is still activating. Refresh in a moment.");
+        }
+      });
+    }, 1500);
+  }
 })();
+
+function showApiBanner(text) {
+  let el = document.getElementById("nex-banner");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "nex-banner";
+    // Fixed, not prepended: inserting into the body flow shoved the whole
+    // dashboard grid sideways, so the warning broke the page it was warning
+    // about.
+    el.style.cssText =
+      "position:fixed;left:0;right:0;top:0;z-index:9999;padding:9px 16px;" +
+      "background:#3a2c0e;color:#f5d67b;font-size:13px;text-align:center;" +
+      "border-bottom:1px solid #5a4a1e;font-family:inherit";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+}
 
 /* ---------- view routing ---------- */
 const VIEW_TITLES = {

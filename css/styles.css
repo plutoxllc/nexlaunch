@@ -141,7 +141,7 @@ button { font-family: inherit; }
 
 /* ---------- stats bar ---------- */
 .stats-bar { border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); background: var(--bg-soft); }
-.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }  /* auto-fit, not a fixed 4: two unsupported stats (a fabricated "320M+ indexed" and a "97.9% accuracy" that measured nothing) were removed, and a hardcoded 4-column grid left the survivors stranded in the left half. */
 .stat-block { padding: 34px 20px; text-align: center; border-left: 1px solid var(--line-soft); }
 .stat-block:first-child { border-left: none; }
 .stat-block .num { font-size: 34px; font-weight: 800; font-family: var(--mono); color: var(--green); letter-spacing: -0.02em; }
